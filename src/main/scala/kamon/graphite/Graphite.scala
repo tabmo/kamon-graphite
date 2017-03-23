@@ -35,9 +35,10 @@ class GraphiteExtension(system: ExtendedActorSystem) extends Kamon.Extension {
   val hostname = graphiteConfig.getString("hostname")
   val port = graphiteConfig.getInt("port")
   val metricPrefix = graphiteConfig.getString("metric-name-prefix")
+  val metricGraphitePathByName = graphiteConfig.getBoolean("metric-graphite-path-by-Name")
   val retryBufferSize = graphiteConfig.getInt("write-retry-buffer-size")
 
-  val metricsSender = system.actorOf(Props(new GraphiteClient(hostname, port, 10 seconds, 10 seconds, retryBufferSize, metricPrefix)), "kamon-graphite")
+  val metricsSender = system.actorOf(Props(new GraphiteClient(hostname, port, 10 seconds, 10 seconds, retryBufferSize, metricPrefix,metricGraphitePathByName)), "kamon-graphite")
   val graphiteClient = graphiteConfig match {
     case NeedToScale(scaleTimeTo, scaleMemoryTo) ⇒
       system.actorOf(MetricScaleDecorator.props(scaleTimeTo, scaleMemoryTo, metricsSender), "graphite-metric-scale-decorator")
@@ -62,8 +63,9 @@ trait MetricPacking {
   private def sanitize(value: String): String =
     value.replace('/', '_').replace('.', '_')
 
-  private def baseName(prefix: String, entity: Entity, key: MetricKey): String =
-    new java.lang.StringBuilder()
+  private def baseName(prefix: String,metricGraphitePathByName:Boolean, entity: Entity, key: MetricKey): String = metricGraphitePathByName match {
+    case true =>    s"$prefix.${entity.name}"
+    case false =>     new java.lang.StringBuilder()
       .append(prefix)
       .append(".")
       .append(entity.category)
@@ -72,6 +74,8 @@ trait MetricPacking {
       .append(".")
       .append(sanitize(key.name))
       .toString()
+  }
+
 
   private def newMetricPacket(baseName: String, timestamp: Long) = new MetricPacket {
     private val builder = new java.lang.StringBuilder()
@@ -93,8 +97,8 @@ trait MetricPacking {
     def byteString(): ByteString = ByteString(this.builder.toString)
   }
 
-  def packHistogram(prefix: String, entity: Entity, histogramKey: HistogramKey, snapshot: Histogram.Snapshot, timestamp: Long): ByteString = {
-    newMetricPacket(baseName(prefix, entity, histogramKey), timestamp)
+  def packHistogram(prefix: String,metricGraphitePathByName:Boolean, entity: Entity, histogramKey: HistogramKey, snapshot: Histogram.Snapshot, timestamp: Long): ByteString = {
+    newMetricPacket(baseName(prefix,metricGraphitePathByName, entity, histogramKey), timestamp)
       .append("count", snapshot.numberOfMeasurements)
       .append("min", snapshot.min)
       .append("max", snapshot.max)
@@ -105,8 +109,8 @@ trait MetricPacking {
       .byteString()
   }
 
-  def packGauge(prefix: String, entity: Entity, histogramKey: GaugeKey, snapshot: Histogram.Snapshot, timestamp: Long): ByteString = {
-    newMetricPacket(baseName(prefix, entity, histogramKey), timestamp)
+  def packGauge(prefix: String,metricGraphitePathByName:Boolean, entity: Entity, histogramKey: GaugeKey, snapshot: Histogram.Snapshot, timestamp: Long): ByteString = {
+    newMetricPacket(baseName(prefix,metricGraphitePathByName, entity, histogramKey), timestamp)
       .append("min", snapshot.min)
       .append("max", snapshot.max)
       .append("sum", snapshot.sum)
@@ -114,16 +118,16 @@ trait MetricPacking {
       .byteString()
   }
 
-  def packMinMaxCounter(prefix: String, entity: Entity, minMaxCounterKey: MinMaxCounterKey, snapshot: Histogram.Snapshot, timestamp: Long): ByteString = {
-    newMetricPacket(baseName(prefix, entity, minMaxCounterKey), timestamp)
+  def packMinMaxCounter(prefix: String,metricGraphitePathByName:Boolean, entity: Entity, minMaxCounterKey: MinMaxCounterKey, snapshot: Histogram.Snapshot, timestamp: Long): ByteString = {
+    newMetricPacket(baseName(prefix,metricGraphitePathByName, entity, minMaxCounterKey), timestamp)
       .append("min", snapshot.min)
       .append("max", snapshot.max)
       .append("avg", average(snapshot))
       .byteString()
   }
 
-  def packCounter(prefix: String, entity: Entity, counterKey: CounterKey, snapshot: Counter.Snapshot, timestamp: Long): ByteString = {
-    newMetricPacket(baseName(prefix, entity, counterKey), timestamp)
+  def packCounter(prefix: String,metricGraphitePathByName:Boolean, entity: Entity, counterKey: CounterKey, snapshot: Counter.Snapshot, timestamp: Long): ByteString = {
+    newMetricPacket(baseName(prefix,metricGraphitePathByName, entity, counterKey), timestamp)
       .append("count", snapshot.count)
       .byteString()
   }
@@ -139,7 +143,8 @@ class GraphiteClient(
     connectionTimeout: FiniteDuration,
     connectionRetryDelay: FiniteDuration,
     writeRetryBufferSize: Int,
-    metricPrefix: String)
+    metricPrefix: String,
+  metricGraphitePathByName:Boolean)
   extends Actor with MetricPacking {
 
   import context.dispatcher
@@ -233,19 +238,19 @@ class GraphiteClient(
     }
 
     def dispatchHistograms(entity: Entity, histograms: Map[HistogramKey, Histogram.Snapshot]): Unit = histograms foreach {
-      case (histogramKey, snapshot) => connection ! Write(packHistogram(metricPrefix, entity, histogramKey, snapshot, timestamp))
+      case (histogramKey, snapshot) => connection ! Write(packHistogram(metricPrefix,metricGraphitePathByName, entity, histogramKey, snapshot, timestamp))
     }
 
     def dispatchGauges(entity: Entity, gauges: Map[GaugeKey, Histogram.Snapshot]): Unit = gauges foreach {
-      case (gaugeKey, snapshot) => connection ! Write(packGauge(metricPrefix, entity, gaugeKey, snapshot, timestamp))
+      case (gaugeKey, snapshot) => connection ! Write(packGauge(metricPrefix,metricGraphitePathByName, entity, gaugeKey, snapshot, timestamp))
     }
 
     def dispatchMinMaxCounters(entity: Entity, minMaxCounters: Map[MinMaxCounterKey, Histogram.Snapshot]): Unit = minMaxCounters foreach {
-      case (minMaxCounterKey, snapshot) => connection ! Write(packMinMaxCounter(metricPrefix, entity, minMaxCounterKey, snapshot, timestamp))
+      case (minMaxCounterKey, snapshot) => connection ! Write(packMinMaxCounter(metricPrefix,metricGraphitePathByName, entity, minMaxCounterKey, snapshot, timestamp))
     }
 
     def dispatchCounters(entity: Entity, counters: Map[CounterKey, Counter.Snapshot]): Unit = counters foreach {
-      case (counterKey, snapshot) => connection ! Write(packCounter(metricPrefix, entity, counterKey, snapshot, timestamp))
+      case (counterKey, snapshot) => connection ! Write(packCounter(metricPrefix,metricGraphitePathByName, entity, counterKey, snapshot, timestamp))
     }
   }
 }
